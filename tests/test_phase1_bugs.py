@@ -70,3 +70,28 @@ def test_orchestrator_accepts_incident_id_kwarg():
 
     assert result["incident_id"] == "my-fixed-id"
     assert "my-fixed-id" in orch.resolved_incidents
+
+
+# ── Bug 2: body read once ─────────────────────────────────────────────────────
+
+def test_webhook_sig_verifier_is_sync_and_takes_raw_bytes():
+    """_verify_webhook_sig must be importable, synchronous, and accept bytes."""
+    import inspect
+    from examples.webhook_server import _verify_webhook_sig
+    assert not inspect.iscoroutinefunction(_verify_webhook_sig), (
+        "_verify_webhook_sig must be a plain sync function, not async"
+    )
+    # No WEBHOOK_SECRET set → should return None without raising.
+    result = _verify_webhook_sig(b'{"key": "value"}', {})
+    assert result is None
+
+
+def test_webhook_sig_rejects_bad_signature(monkeypatch):
+    """A wrong HMAC signature must raise 403."""
+    import os
+    from fastapi import HTTPException
+    from examples.webhook_server import _verify_webhook_sig
+    monkeypatch.setenv("WEBHOOK_SECRET", "test-secret")
+    with pytest.raises(HTTPException) as exc_info:
+        _verify_webhook_sig(b'{"key":"value"}', {"X-Webhook-Signature": "sha256=badhash"})
+    assert exc_info.value.status_code == 403

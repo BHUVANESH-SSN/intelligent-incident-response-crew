@@ -23,36 +23,26 @@ app = FastAPI(title="Incident Response Webhook Server")
 
 # --- Authentication Middleware ---
 
-async def verify_webhook(request: Request):
-    """Verify webhook signature using HMAC-SHA256.
-    
+def _verify_webhook_sig(raw_body: bytes, headers) -> None:
+    """Raise HTTPException if the HMAC-SHA256 webhook signature is invalid.
+
     If WEBHOOK_SECRET is not set, authentication is skipped (dev mode).
     Expects header: X-Webhook-Signature: sha256=<hex-digest>
     """
     webhook_secret = os.getenv("WEBHOOK_SECRET")
-    
-    # Skip auth in dev mode (no secret configured)
     if not webhook_secret:
-        return True
-        
-    signature = request.headers.get("X-Webhook-Signature", "")
+        return
+    signature = headers.get("X-Webhook-Signature", "")
     if not signature.startswith("sha256="):
         raise HTTPException(status_code=401, detail="Missing or invalid signature header")
-        
-    body = await request.body()
-    expected_sig = hmac.new(
+    expected = hmac.new(
         webhook_secret.encode("utf-8"),
-        body,
+        raw_body,
         hashlib.sha256
     ).hexdigest()
-    
-    provided_sig = signature[7:]  # Strip "sha256=" prefix
-    
-    if not hmac.compare_digest(expected_sig, provided_sig):
+    if not hmac.compare_digest(expected, signature[7:]):
         logger.warning("Webhook signature verification failed")
         raise HTTPException(status_code=403, detail="Invalid webhook signature")
-    
-    return True
 
 
 # --- Background Processing ---
@@ -69,15 +59,17 @@ def _process_alert_async(incident_id: str, data: dict):
 
 # --- Routes ---
 
-@app.post("/webhook/alert", status_code=202, dependencies=[Depends(verify_webhook)])
+@app.post("/webhook/alert", status_code=202)
 async def receive_alert(request: Request, background_tasks: BackgroundTasks):
     """
     Webhook endpoint for receiving alerts from PagerDuty/OpsGenie.
     Processes alerts asynchronously so the webhook responds immediately.
     """
+    raw_body = await request.body()
+    _verify_webhook_sig(raw_body, request.headers)
     try:
-        data = await request.json()
-    except Exception:
+        data = json.loads(raw_body)
+    except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Request body must be JSON")
         
     # Validate required fields
