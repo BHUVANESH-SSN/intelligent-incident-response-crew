@@ -61,7 +61,7 @@ def _process_alert_async(incident_id: str, data: dict):
     """Process alert in background thread."""
     try:
         logger.info(f"[{incident_id}] Starting async alert processing")
-        result = orchestrator.process_alert(data)
+        result = orchestrator.process_alert(data, incident_id=incident_id)
         logger.info(f"[{incident_id}] Alert processing complete: {result.get('status')}")
     except Exception as e:
         logger.exception(f"[{incident_id}] Error in async alert processing: {e}")
@@ -89,8 +89,8 @@ async def receive_alert(request: Request, background_tasks: BackgroundTasks):
     # Generate incident ID if not provided
     if "alert_id" not in data:
         data["alert_id"] = str(uuid.uuid4())
-        
-    incident_id = str(uuid.uuid4())[:8]
+
+    incident_id = str(uuid.uuid4())
     logger.info(f"Received alert for {data.get('service')}, incident: {incident_id}")
     
     # Process asynchronously via FastAPI Background Tasks
