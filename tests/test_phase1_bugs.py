@@ -95,3 +95,29 @@ def test_webhook_sig_rejects_bad_signature(monkeypatch):
     with pytest.raises(HTTPException) as exc_info:
         _verify_webhook_sig(b'{"key":"value"}', {"X-Webhook-Signature": "sha256=badhash"})
     assert exc_info.value.status_code == 403
+
+
+# ── Bug 3: __main__ import path ───────────────────────────────────────────────
+
+def test_main_block_uses_app_object_not_string():
+    """The __main__ block must not pass a bare string 'webhook_server:app'
+    to uvicorn.run — it should pass the app object directly."""
+    import ast, pathlib
+    src = pathlib.Path("examples/webhook_server.py").read_text()
+    tree = ast.parse(src)
+
+    # Find the if __name__ == "__main__": block
+    for node in ast.walk(tree):
+        if isinstance(node, ast.If):
+            test = node.test
+            if (
+                isinstance(test, ast.Compare)
+                and isinstance(test.left, ast.Name)
+                and test.left.id == "__name__"
+            ):
+                # Stringify the body and check for the bad string
+                body_src = ast.unparse(node)
+                assert "webhook_server:app" not in body_src, (
+                    "__main__ block still uses bare 'webhook_server:app' string — "
+                    "use uvicorn.run(app, ...) instead"
+                )

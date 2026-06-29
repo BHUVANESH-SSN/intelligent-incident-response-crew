@@ -146,7 +146,7 @@ async def health_check():
 
 if __name__ == "__main__":
     print("Starting Incident Response Webhook Server...")
-    print("Listen on http://localhost:5000")
+    print("Listen on http://0.0.0.0:5000")
     print()
     print("Endpoints:")
     print("  POST /webhook/alert   - Receive alerts")
@@ -155,4 +155,4 @@ if __name__ == "__main__":
     print("  GET  /health          - Health check")
     print("  GET  /docs            - Swagger UI APIs")
     print()
-    uvicorn.run("webhook_server:app", host="0.0.0.0", port=5000, reload=True)
+    uvicorn.run(app, host="0.0.0.0", port=5000)
