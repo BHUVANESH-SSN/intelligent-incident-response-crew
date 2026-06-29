@@ -103,7 +103,7 @@ def test_main_block_uses_app_object_not_string():
     """The __main__ block must not pass a bare string 'webhook_server:app'
     to uvicorn.run — it should pass the app object directly."""
     import ast, pathlib
-    src = pathlib.Path("examples/webhook_server.py").read_text()
+    src = (pathlib.Path(__file__).parent.parent / "examples/webhook_server.py").read_text()
     tree = ast.parse(src)
 
     # Find the if __name__ == "__main__": block
@@ -165,9 +165,108 @@ def test_incident_detail_rejects_without_token(client, monkeypatch):
 def test_crewai_version_pinned_in_requirements():
     """requirements.txt must pin crewai to a <0.30.0 upper bound."""
     import pathlib
-    reqs = pathlib.Path("requirements.txt").read_text()
+    reqs = (pathlib.Path(__file__).parent.parent / "requirements.txt").read_text()
     crewai_lines = [l for l in reqs.splitlines() if l.startswith("crewai>=")]
     assert crewai_lines, "crewai must start with crewai>= in requirements.txt"
     assert any("<0.30.0" in l for l in crewai_lines), (
         f"crewai line must contain <0.30.0 upper bound, got: {crewai_lines}"
     )
+
+
+# ── Task 4: /metrics auth ──────────────────────────────────────────────────────
+
+def test_metrics_rejects_without_token(client, monkeypatch):
+    """GET /metrics must return 401 when API_TOKEN is set and header absent."""
+    monkeypatch.setenv("API_TOKEN", "secret-token")
+    resp = client.get("/metrics")
+    assert resp.status_code == 401
+
+
+def test_metrics_accepts_correct_token(client, monkeypatch):
+    """GET /metrics must return 200 when the correct Bearer token is provided."""
+    monkeypatch.setenv("API_TOKEN", "secret-token")
+    resp = client.get("/metrics", headers={"Authorization": "Bearer secret-token"})
+    assert resp.status_code == 200
+
+
+# ── Escalation logic (_evaluate_escalation) ───────────────────────────────────
+
+@pytest.fixture
+def orch_instance():
+    from src.orchestrator import IncidentResponseOrchestrator
+    return IncidentResponseOrchestrator()
+
+
+@pytest.fixture
+def p1_alert():
+    from src.models.incident import Alert, SeverityLevel
+    return Alert(
+        alert_id="esc-1",
+        service="payment-api",
+        alert_type="high_error_rate",
+        severity=SeverityLevel.P1,
+        description="Critical error",
+        metric_value=0.9,
+        threshold=0.10,
+    )
+
+
+@pytest.fixture
+def p3_alert():
+    from src.models.incident import Alert, SeverityLevel
+    return Alert(
+        alert_id="esc-2",
+        service="payment-api",
+        alert_type="high_error_rate",
+        severity=SeverityLevel.P3,
+        description="Minor error",
+        metric_value=0.15,
+        threshold=0.10,
+    )
+
+
+def test_escalation_on_low_confidence(orch_instance, p3_alert):
+    """Confidence below MIN_CONFIDENCE_FOR_AUTO_FIX triggers escalation."""
+    summary = orch_instance._process_crew_result(
+        "inc-low", p3_alert, '{"root_cause": "x", "confidence": 0.4}', 1.0
+    )
+    assert summary.escalated is True
+    assert "confidence" in summary.escalation_reason.lower()
+
+
+def test_no_escalation_on_high_confidence(orch_instance, p3_alert):
+    """Confidence above threshold with fast duration and non-P1 should not escalate."""
+    summary = orch_instance._process_crew_result(
+        "inc-high", p3_alert, '{"root_cause": "x", "confidence": 0.9}', 1.0
+    )
+    assert summary.escalated is False
+
+
+def test_escalation_on_p1_severity(orch_instance, p1_alert):
+    """P1 severity always escalates regardless of confidence."""
+    summary = orch_instance._process_crew_result(
+        "inc-p1", p1_alert, '{"root_cause": "x", "confidence": 0.95}', 1.0
+    )
+    assert summary.escalated is True
+    assert "p1" in summary.escalation_reason.lower()
+
+
+def test_process_alert_status_reflects_escalation(client, monkeypatch):
+    """process_alert must return status='escalated' when summary escalates."""
+    from unittest.mock import patch, MagicMock
+    from src.orchestrator import orchestrator
+
+    fake_crew = MagicMock()
+    fake_crew.kickoff.return_value = '{"root_cause": "x", "confidence": 0.3}'
+    payload = {
+        "service": "svc",
+        "alert_type": "generic",
+        "severity": "P3",
+        "description": "Low confidence test",
+        "metric_value": 0.2,
+        "threshold": 0.1,
+    }
+    with patch("src.orchestrator.create_incident_response_crew", return_value=fake_crew):
+        result = orchestrator.process_alert(payload)
+
+    assert result["status"] == "escalated"

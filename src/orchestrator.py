@@ -4,7 +4,7 @@ import os
 import json
 import logging
 import time
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from datetime import datetime
 import uuid
 
@@ -26,7 +26,7 @@ class IncidentResponseOrchestrator:
         self.pending_incidents: Dict[str, IncidentContext] = {}
         self.resolved_incidents: Dict[str, IncidentSummary] = {}
     
-    def process_alert(self, alert_payload: Dict[str, Any], incident_id: str = None) -> Dict[str, Any]:
+    def process_alert(self, alert_payload: Dict[str, Any], incident_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Process an incoming alert and trigger the incident response crew.
 
@@ -101,7 +101,7 @@ class IncidentResponseOrchestrator:
             
             return {
                 "incident_id": incident_id,
-                "status": "completed",
+                "status": "escalated" if summary.escalated else "completed",
                 "duration_seconds": round(duration, 1),
                 "summary": summary.model_dump(),
                 "raw_output": str(result)
