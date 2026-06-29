@@ -1,101 +1,144 @@
-# Intelligent Incident Response System
+# Intelligent Incident Response Crew
 
-An enterprise-grade, AI-powered incident response orchestration system leveraging CrewAI to automatically diagnose monitoring alerts, analyze application logs, identify root causes, and provide structured remediation recommendations. Designed to significantly reduce Mean Time To Recovery (MTTR) and improve on-call efficiency.
-
-## Overview
-
-Traditional incident response relies on on-call engineers manually correlating alerts, logs, and metrics during high-pressure situations. This system automates the diagnostic pipeline by deploying a specialized multi-agent crew:
-
-1. **Incident Triage Specialist**: Classifies severity and validates alert legitimacy via metrics.
-2. **Log Analyzer**: Extracts error patterns, stack traces, and anomalies from centralized logging.
-3. **Root Cause Analyst**: Correlates events across systems to determine the true root cause with a confidence threshold.
-4. **Runbook Retriever**: Searches historical runbooks and playbooks for safe remediation steps.
-5. **Incident Notifier**: Synthesizes the investigation into a structured summary for team communication (e.g., Slack).
-
-Currently configured for the "Basic On-Call Replacement" pattern: an alert triggers a read-only diagnostic process which posts a comprehensive summary to the engineering team.
+AI-powered incident response orchestration built on **CrewAI**. An alert (from PagerDuty, Datadog, or Alertmanager) hits a FastAPI webhook, which runs a 5-agent sequential crew that triages the alert, analyzes logs, finds the root cause, retrieves a runbook, and posts a summary to Slack. The pipeline is **read-only** with respect to infrastructure — it diagnoses, it does not remediate.
 
 ## Architecture
 
-```text
-Alert Payload -> Webhook Receiver (FastAPI) -> Orchestrator -> CrewAI Pipeline
-                                                                    |-> Triage Agent
-                                                                    |-> Log Agent
-                                                                    |-> RCA Agent
-                                                                    |-> Runbook Agent
-                                                                    |-> Notifier Agent
-                                                                            |
-                                                                     Incident Summary (Slack)
+```
+Alert JSON  ──►  POST /webhook/alert          (FastAPI, returns 202)
+PD Event    ──►  POST /webhook/pagerduty      (PagerDuty v3 format)
+                       │
+                       ▼  Redis dedup (1-hour fingerprint window)
+                       │
+                  BackgroundTask
+                       │
+                       ▼
+              orchestrator.process_alert()
+                       │
+                       ▼
+         create_incident_response_crew()
+                       │
+          ┌────────────┼────────────────┐
+          ▼            ▼                ▼
+     triage_agent  log_agent       rca_agent
+                                        │
+                                   runbook_agent  (vector search → keyword fallback)
+                                        │
+                                  notifier_agent  (Slack + Jira)
+                                        │
+                                        ▼
+                           IncidentSummary → PostgreSQL
 ```
 
-## Technology Stack
+**Key properties:**
+- Every integration client pings its backend on init and silently falls back to realistic mock data when unreachable — the full pipeline runs locally with no infrastructure.
+- `crew.kickoff()` requires a real LLM; set `LLM_MODEL` and the matching API key or the crew returns `{"status": "error"}`.
+- Incident history is persisted to PostgreSQL (SQLite in dev/test).
+- Alert deduplication uses Redis with a 1-hour bucket fingerprint; falls back to an in-process dict.
 
-* **Framework:** CrewAI, LangChain
-* **LLM Engine:** Groq / OpenAI-compatible models
-* **API Server:** FastAPI, Uvicorn
-* **Monitoring Integrations:** Prometheus, Elasticsearch
-* **Notification:** Slack SDK
-* **Data Validation:** Pydantic
-
-## Quick Start
-
-### 1. Environment Configuration
-
-Copy the environment template and configure your required credentials:
+## Quick start (Docker)
 
 ```bash
 cp .env.example .env
+# Edit .env — set LLM_MODEL and the matching API key at minimum
+
+docker compose up -d
 ```
 
-Ensure the following critical variables are set in `.env`:
-* `OPENAI_API_BASE` (e.g., `https://api.groq.com/openai/v1`)
-* `OPENAI_API_KEY` (Your Groq/OpenAI key)
-* `SLACK_BOT_TOKEN` (Bot OAuth Token for your workspace)
+This starts: **app** (port 5000) · **postgres** with pgvector (5432) · **redis** (6379) · **elasticsearch** (9200) · **prometheus** (9090).
 
-### 2. Dependency Installation
-
-A Python 3.10+ environment is recommended.
+Send a test alert:
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
+curl -X POST http://localhost:5000/webhook/alert \
+  -H "Content-Type: application/json" \
+  -d '{
+    "alert_id": "a1",
+    "service": "payment-api",
+    "alert_type": "high_error_rate",
+    "severity": "P1",
+    "description": "Error rate 45%",
+    "metric_value": 0.45,
+    "threshold": 0.10
+  }'
+```
+
+## Quick start (local)
+
+```bash
+python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+cp .env.example .env   # fill in LLM_MODEL + API key
+
+python main.py          # serves on http://0.0.0.0:5000
 ```
 
-### 3. Running the Service
+## Endpoints
 
-The project uses FastAPI and Uvicorn for production-ready async webhooks. You can start the service manually:
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `POST` | `/webhook/alert` | HMAC-SHA256 (optional) | Generic inbound alert |
+| `POST` | `/webhook/pagerduty` | HMAC-SHA256 (optional) | PagerDuty v3 event |
+| `GET` | `/incident/{id}` | Bearer token (optional) | Incident status + summary |
+| `GET` | `/incidents` | Bearer token (optional) | All pending + resolved incidents |
+| `GET` | `/health` | — | Liveness + counts |
+| `GET` | `/metrics` | Bearer token (optional) | Prometheus metrics |
+| `GET` | `/docs` | — | Swagger UI |
+
+Authentication is **opt-in**: set `WEBHOOK_SECRET` and/or `API_TOKEN` in `.env` to enable. Leave empty for dev mode.
+
+## LLM provider
+
+Set `LLM_MODEL` to any [LiteLLM model string](https://docs.litellm.ai/docs/providers) and the matching key:
+
+| Provider | LLM_MODEL example | Key var |
+|----------|------------------|---------|
+| OpenAI | `gpt-4o` | `OPENAI_API_KEY` |
+| Anthropic | `anthropic/claude-sonnet-4-6` | `ANTHROPIC_API_KEY` |
+| Groq | `groq/llama3-70b-8192` | `OPENAI_API_KEY` + `OPENAI_API_BASE=https://api.groq.com/openai/v1` |
+
+`LLM_MODEL_FAST` is used for the triage and runbook agents (cheaper/faster); defaults to `gpt-4o-mini`.
+
+## Runbook seeding (pgvector)
+
+After the stack is up, seed the built-in runbooks into the vector store:
 
 ```bash
-uvicorn examples.webhook_server:app --host 0.0.0.0 --port 5000 --workers 4
+python scripts/seed_runbooks.py
 ```
 
-Alternatively, configure the provided `incident-webhook.service` to run it as a continuous background daemon.
+Without seeding, `search_runbooks` falls back to keyword scoring automatically.
 
-## Usage
+## Running tests
 
-When the server is running, configure your alerting platforms (Datadog, PagerDuty, PromQL Alertmanager) to POST a JSON payload to the webhook endpoint.
-
-**Webhook Endpoint:** `http://<your-server-ip>:5000/webhook/alert`
-
-**Example Payload:**
-```json
-{
-  "alert_id": "alert-001",
-  "service": "payment-api",
-  "alert_type": "high_error_rate",
-  "severity": "P1",
-  "description": "Error rate exceeded 10%",
-  "metric_value": 0.45,
-  "threshold": 0.10
-}
+```bash
+DATABASE_URL=sqlite:///:memory: pytest --tb=short -q
 ```
 
-## Security and Production Guidelines
+All 80 tests pass with no external dependencies (ES, Redis, pgvector all mock on failure).
 
-* **Stateless Diagnostics:** The current Multi-Agent pipeline operates in read-only mode regarding infrastructure, guaranteeing zero destructive side-effects during analysis.
-* **Authentication:** Ensure you export a secure string as `WEBHOOK_SECRET` in your `.env` file to strictly mandate HMAC-SHA256 signature verification on incoming alerts.
-* **Model Selection:** The implementation is highly sensitive to model capabilities. For complex stack-trace analysis, large-context models (`llama3-70b-8192` or `gpt-4`) are highly recommended over smaller counterparts.
+## Tech stack
+
+| Layer | Technology |
+|-------|-----------|
+| Agent framework | CrewAI |
+| LLM abstraction | LiteLLM |
+| HTTP server | FastAPI + Uvicorn |
+| Persistence | SQLAlchemy 2 · PostgreSQL / SQLite |
+| Deduplication | Redis |
+| Log search | Elasticsearch |
+| Metrics | Prometheus |
+| Vector search | pgvector + sentence-transformers |
+| Notifications | Slack SDK · Jira |
+| Data validation | Pydantic v2 |
+
+## Security notes
+
+- Webhook HMAC-SHA256 verification is enforced only when `WEBHOOK_SECRET` is set.
+- Bearer token auth on read endpoints is enforced only when `API_TOKEN` is set.
+- The agent pipeline is read-only with respect to infrastructure — no automated remediation.
+- Never commit `.env` (it is gitignored). Use `.env.example` as the template.
 
 ## License
 
-MIT License
+MIT

@@ -19,20 +19,26 @@ from examples.webhook_server import app
 if __name__ == "__main__":
     print("""
     ===================================================================
-    
+
             INTELLIGENT INCIDENT RESPONSE CREW
-            
+
             CrewAI-powered incident diagnosis & remediation
-            
+
     ===================================================================
-    
+
     Starting webhook server on http://0.0.0.0:5000
-    
-    Endpoints:
-      • POST /webhook/alert          - Receive alerts from PagerDuty/OpsGenie
-      • GET  /incident/<id>          - Get incident status
-      • GET  /health                 - Health check
-    
+
+    Inbound webhooks:
+      POST /webhook/alert        - Generic alert (PagerDuty/OpsGenie/custom)
+      POST /webhook/pagerduty    - PagerDuty v3 event notifications
+
+    Status & metrics:
+      GET  /incident/{id}        - Incident status and summary
+      GET  /incidents            - List all pending + resolved incidents
+      GET  /health               - Health check (counts, liveness)
+      GET  /metrics              - Prometheus metrics
+      GET  /docs                 - Swagger UI
+
     Example alert:
       curl -X POST http://localhost:5000/webhook/alert \\
         -H "Content-Type: application/json" \\
@@ -45,7 +51,7 @@ if __name__ == "__main__":
           "metric_value": 0.45,
           "threshold": 0.10
         }'
-    
+
     Press Ctrl+C to stop.
     """)
     
