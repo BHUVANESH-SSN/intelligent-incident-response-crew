@@ -121,3 +121,40 @@ def test_main_block_uses_app_object_not_string():
                     "__main__ block still uses bare 'webhook_server:app' string — "
                     "use uvicorn.run(app, ...) instead"
                 )
+
+
+# ── Task 4: bearer-token auth on read endpoints ───────────────────────────────
+
+def test_incidents_rejects_when_api_token_set(client, monkeypatch):
+    """GET /incidents must return 401 when API_TOKEN is configured but header absent."""
+    monkeypatch.setenv("API_TOKEN", "secret-token")
+    resp = client.get("/incidents")
+    assert resp.status_code == 401
+
+
+def test_incidents_accepts_correct_token(client, monkeypatch):
+    """GET /incidents must return 200 when the correct Bearer token is provided."""
+    monkeypatch.setenv("API_TOKEN", "secret-token")
+    resp = client.get("/incidents", headers={"Authorization": "Bearer secret-token"})
+    assert resp.status_code == 200
+
+
+def test_incidents_rejects_wrong_token(client, monkeypatch):
+    """GET /incidents must return 403 when a wrong token is provided."""
+    monkeypatch.setenv("API_TOKEN", "secret-token")
+    resp = client.get("/incidents", headers={"Authorization": "Bearer wrong-token"})
+    assert resp.status_code == 403
+
+
+def test_health_does_not_require_token(client, monkeypatch):
+    """GET /health must remain open — no token required."""
+    monkeypatch.setenv("API_TOKEN", "secret-token")
+    resp = client.get("/health")
+    assert resp.status_code == 200
+
+
+def test_incident_detail_rejects_without_token(client, monkeypatch):
+    """GET /incident/{id} must return 401 when API_TOKEN is set and header absent."""
+    monkeypatch.setenv("API_TOKEN", "secret-token")
+    resp = client.get("/incident/nonexistent-id")
+    assert resp.status_code == 401

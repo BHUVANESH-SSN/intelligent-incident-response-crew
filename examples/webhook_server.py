@@ -7,7 +7,7 @@ import hashlib
 import logging
 import uuid
 import sys
-from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
+from fastapi import FastAPI, Request, HTTPException, BackgroundTasks, Depends
 from fastapi.responses import Response
 import uvicorn
 
@@ -43,6 +43,22 @@ def _verify_webhook_sig(raw_body: bytes, headers) -> None:
     if not hmac.compare_digest(expected, signature[7:]):
         logger.warning("Webhook signature verification failed")
         raise HTTPException(status_code=403, detail="Invalid webhook signature")
+
+
+async def _verify_api_token(request: Request) -> None:
+    """Verify bearer token for protected read endpoints.
+
+    If API_TOKEN is not set, authentication is skipped (dev mode).
+    Expects header: Authorization: Bearer <token>
+    """
+    api_token = os.getenv("API_TOKEN")
+    if not api_token:
+        return
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+    if not hmac.compare_digest(auth[7:], api_token):
+        raise HTTPException(status_code=403, detail="Invalid API token")
 
 
 # --- Background Processing ---
@@ -94,7 +110,7 @@ async def receive_alert(request: Request, background_tasks: BackgroundTasks):
         "message": "Alert processing started in background"
     }
 
-@app.get("/incident/{incident_id}")
+@app.get("/incident/{incident_id}", dependencies=[Depends(_verify_api_token)])
 async def get_incident(incident_id: str):
     """Get incident status and details."""
     try:
@@ -103,7 +119,7 @@ async def get_incident(incident_id: str):
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-@app.get("/incidents")
+@app.get("/incidents", dependencies=[Depends(_verify_api_token)])
 async def list_incidents():
     """List all incidents (pending and resolved)."""
     try:
@@ -124,7 +140,7 @@ async def list_incidents():
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-@app.get("/metrics")
+@app.get("/metrics", dependencies=[Depends(_verify_api_token)])
 async def prometheus_metrics():
     """Prometheus metrics endpoint for self-monitoring."""
     try:
