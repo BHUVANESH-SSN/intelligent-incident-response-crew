@@ -10,10 +10,13 @@ load_dotenv()
 class Config:
     """Base configuration."""
     
-    # LLM Configuration
+    # LLM Configuration — LiteLLM model strings (e.g. "gpt-4", "anthropic/claude-sonnet-4-6")
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-    OPENAI_API_BASE = os.getenv("OPENAI_API_BASE")  # For Groq/compatible APIs
-    OPENAI_MODEL_NAME = os.getenv("OPENAI_MODEL_NAME", "gpt-4")
+    OPENAI_API_BASE = os.getenv("OPENAI_API_BASE")
+    OPENAI_MODEL_NAME = os.getenv("OPENAI_MODEL_NAME", "gpt-4")  # kept for backward-compat
+    LLM_MODEL = os.getenv("LLM_MODEL", os.getenv("OPENAI_MODEL_NAME", "gpt-4"))
+    LLM_MODEL_FAST = os.getenv("LLM_MODEL_FAST", "gpt-3.5-turbo")
+    ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
     
     # Elasticsearch
     ELASTICSEARCH_HOST = os.getenv("ELASTICSEARCH_HOST", "http://localhost:9200")
