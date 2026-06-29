@@ -24,7 +24,8 @@ class IncidentResponseOrchestrator:
     
     def __init__(self):
         self.pending_incidents: Dict[str, IncidentContext] = {}
-        self.resolved_incidents: Dict[str, IncidentSummary] = {}
+        from src.db import init_db
+        init_db()
     
     def process_alert(self, alert_payload: Dict[str, Any], incident_id: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -79,8 +80,25 @@ class IncidentResponseOrchestrator:
             
             # Move to resolved
             del self.pending_incidents[incident_id]
-            self.resolved_incidents[incident_id] = summary
             active_incidents.dec()
+
+            from src.db import SessionLocal
+            from src.models.db_models import IncidentRecord
+            with SessionLocal() as session:
+                record = IncidentRecord(
+                    incident_id=incident_id,
+                    service=summary.service,
+                    severity=summary.severity.value,
+                    status=summary.status.value,
+                    root_cause=summary.root_cause,
+                    root_cause_confidence=summary.root_cause_confidence,
+                    escalated=summary.escalated,
+                    escalation_reason=summary.escalation_reason,
+                    duration_minutes=summary.duration_minutes,
+                    summary_json=json.dumps(summary.model_dump(mode="json")),
+                )
+                session.add(record)
+                session.commit()
             
             # Record metrics
             duration = time.time() - start_time
@@ -252,18 +270,41 @@ class IncidentResponseOrchestrator:
     
     def get_incident(self, incident_id: str) -> Dict[str, Any]:
         """Get incident details."""
-        if incident_id in self.resolved_incidents:
-            return {
-                "status": "resolved",
-                "summary": self.resolved_incidents[incident_id].model_dump()
-            }
-        elif incident_id in self.pending_incidents:
+        if incident_id in self.pending_incidents:
             return {
                 "status": "investigating",
                 "alert": self.pending_incidents[incident_id].alert.model_dump()
             }
-        else:
-            return {"status": "not_found"}
+        from src.db import SessionLocal
+        from src.models.db_models import IncidentRecord
+        with SessionLocal() as session:
+            record = session.get(IncidentRecord, incident_id)
+            if record:
+                return {
+                    "status": record.status,
+                    "summary": json.loads(record.summary_json)
+                }
+        return {"status": "not_found"}
+
+    def list_resolved_incidents(self) -> Dict[str, Dict[str, str]]:
+        from src.db import SessionLocal
+        from src.models.db_models import IncidentRecord
+        with SessionLocal() as session:
+            records = session.query(IncidentRecord).all()
+            return {
+                r.incident_id: {
+                    "status": r.status,
+                    "service": r.service,
+                    "severity": r.severity,
+                }
+                for r in records
+            }
+
+    def count_resolved(self) -> int:
+        from src.db import SessionLocal
+        from src.models.db_models import IncidentRecord
+        with SessionLocal() as session:
+            return session.query(IncidentRecord).count()
 
 
 # Global orchestrator instance

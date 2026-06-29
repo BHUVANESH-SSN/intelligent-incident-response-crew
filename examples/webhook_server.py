@@ -8,13 +8,17 @@ import logging
 import uuid
 import sys
 from fastapi import FastAPI, Request, HTTPException, BackgroundTasks, Depends
-from fastapi.responses import Response
+from fastapi.responses import Response, JSONResponse
 import uvicorn
 
 # Ensure src is in path if not already
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.orchestrator import orchestrator
+from src.integrations.redis_client import RedisDeduplicator
+from src.dedup import compute_fingerprint
+
+deduplicator = RedisDeduplicator()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -98,7 +102,19 @@ async def receive_alert(request: Request, background_tasks: BackgroundTasks):
     if "alert_id" not in data:
         data["alert_id"] = str(uuid.uuid4())
 
+    # Deduplication — same alert in the same hour returns the existing investigation
+    fingerprint = compute_fingerprint(data)
+    existing_id = deduplicator.check(fingerprint)
+    if existing_id:
+        logger.info(f"Duplicate alert detected — returning existing incident {existing_id}")
+        return JSONResponse(status_code=200, content={
+            "status": "deduplicated",
+            "incident_id": existing_id,
+            "message": "Duplicate alert — investigation already in progress",
+        })
+
     incident_id = str(uuid.uuid4())
+    deduplicator.set(fingerprint, incident_id)
     logger.info(f"Received alert for {data.get('service')}, incident: {incident_id}")
     
     # Process asynchronously via FastAPI Background Tasks
@@ -127,10 +143,7 @@ async def list_incidents():
             k: {"status": "investigating", "service": v.alert.service, "severity": v.severity.value}
             for k, v in orchestrator.pending_incidents.items()
         }
-        resolved = {
-            k: {"status": "resolved", "service": v.service, "severity": v.severity.value}
-            for k, v in orchestrator.resolved_incidents.items()
-        }
+        resolved = orchestrator.list_resolved_incidents()
         return {
             "pending": pending,
             "resolved": resolved,
@@ -157,7 +170,7 @@ async def health_check():
     return {
         "status": "healthy",
         "pending_incidents": len(orchestrator.pending_incidents),
-        "resolved_incidents": len(orchestrator.resolved_incidents)
+        "resolved_incidents": orchestrator.count_resolved()
     }
 
 if __name__ == "__main__":

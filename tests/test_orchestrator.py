@@ -144,7 +144,7 @@ def test_process_alert_completed_and_moves_to_resolved(orch, alert):
 
     # Incident moved from pending to resolved
     assert incident_id not in orch.pending_incidents
-    assert incident_id in orch.resolved_incidents
+    assert orch.get_incident(incident_id)["status"] != "not_found"
     assert isinstance(summary["duration_minutes"], (int, float))
 
 

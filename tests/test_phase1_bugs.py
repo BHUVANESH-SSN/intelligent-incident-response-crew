@@ -7,6 +7,8 @@ from fastapi.testclient import TestClient
 
 from examples.webhook_server import app
 from src.orchestrator import orchestrator, IncidentResponseOrchestrator
+from src.db import init_db, SessionLocal
+from src.models.db_models import IncidentRecord
 
 
 @pytest.fixture
@@ -16,11 +18,16 @@ def client():
 
 @pytest.fixture(autouse=True)
 def clean_singleton():
+    init_db()
     orchestrator.pending_incidents.clear()
-    orchestrator.resolved_incidents.clear()
+    with SessionLocal() as session:
+        session.query(IncidentRecord).delete()
+        session.commit()
     yield
     orchestrator.pending_incidents.clear()
-    orchestrator.resolved_incidents.clear()
+    with SessionLocal() as session:
+        session.query(IncidentRecord).delete()
+        session.commit()
 
 
 ALERT = {
@@ -69,7 +76,7 @@ def test_orchestrator_accepts_incident_id_kwarg():
         result = orch.process_alert(payload, incident_id="my-fixed-id")
 
     assert result["incident_id"] == "my-fixed-id"
-    assert "my-fixed-id" in orch.resolved_incidents
+    assert orch.get_incident("my-fixed-id")["status"] != "not_found"
 
 
 # ── Bug 2: body read once ─────────────────────────────────────────────────────
