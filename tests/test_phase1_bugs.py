@@ -158,3 +158,16 @@ def test_incident_detail_rejects_without_token(client, monkeypatch):
     monkeypatch.setenv("API_TOKEN", "secret-token")
     resp = client.get("/incident/nonexistent-id")
     assert resp.status_code == 401
+
+
+# ── Task 5: crewai version pin ────────────────────────────────────────────────
+
+def test_crewai_version_pinned_in_requirements():
+    """requirements.txt must pin crewai to a <0.30.0 upper bound."""
+    import pathlib
+    reqs = pathlib.Path("requirements.txt").read_text()
+    crewai_lines = [l for l in reqs.splitlines() if l.startswith("crewai>=")]
+    assert crewai_lines, "crewai must start with crewai>= in requirements.txt"
+    assert any("<0.30.0" in l for l in crewai_lines), (
+        f"crewai line must contain <0.30.0 upper bound, got: {crewai_lines}"
+    )
