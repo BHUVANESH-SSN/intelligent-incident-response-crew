@@ -7,7 +7,7 @@ import hashlib
 import logging
 import uuid
 import sys
-from fastapi import FastAPI, Request, HTTPException, Depends, BackgroundTasks
+from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
 from fastapi.responses import Response
 import uvicorn
 
