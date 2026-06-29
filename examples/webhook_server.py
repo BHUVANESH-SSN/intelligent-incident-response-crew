@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.orchestrator import orchestrator
 from src.integrations.redis_client import RedisDeduplicator
 from src.dedup import compute_fingerprint
+from src.parsers.pagerduty import parse_pagerduty_alert
 
 deduplicator = RedisDeduplicator()
 
@@ -125,6 +126,48 @@ async def receive_alert(request: Request, background_tasks: BackgroundTasks):
         "incident_id": incident_id,
         "message": "Alert processing started in background"
     }
+
+@app.post("/webhook/pagerduty", status_code=202)
+async def receive_pagerduty(request: Request, background_tasks: BackgroundTasks):
+    """
+    Inbound webhook for PagerDuty v3 event notifications.
+    Converts the PagerDuty event format to the internal alert schema and
+    feeds it through the same dedup + crew pipeline as /webhook/alert.
+    """
+    raw_body = await request.body()
+    _verify_webhook_sig(raw_body, request.headers)
+    try:
+        payload = json.loads(raw_body)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Request body must be JSON")
+
+    try:
+        data = parse_pagerduty_alert(payload)
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid PagerDuty payload: {exc}")
+
+    fingerprint = compute_fingerprint(data)
+    existing_id = deduplicator.check(fingerprint)
+    if existing_id:
+        logger.info(f"Duplicate PagerDuty alert — returning existing incident {existing_id}")
+        return JSONResponse(status_code=200, content={
+            "status": "deduplicated",
+            "incident_id": existing_id,
+            "message": "Duplicate alert — investigation already in progress",
+        })
+
+    incident_id = str(uuid.uuid4())
+    deduplicator.set(fingerprint, incident_id)
+    logger.info(f"Received PagerDuty alert for {data.get('service')}, incident: {incident_id}")
+
+    background_tasks.add_task(_process_alert_async, incident_id, data)
+
+    return {
+        "status": "received",
+        "incident_id": incident_id,
+        "message": "Alert processing started in background",
+    }
+
 
 @app.get("/incident/{incident_id}", dependencies=[Depends(_verify_api_token)])
 async def get_incident(incident_id: str):
